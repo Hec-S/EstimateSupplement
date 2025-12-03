@@ -1,0 +1,5 @@
+{
+  "name": "DocCompare AI",
+  "description": "An intelligent document comparison tool that uses Gemini to analyze an Original Estimate versus a Supplement Record, identifying added line items and generating a PDF report.",
+  "requestFramePermissions": []
+}

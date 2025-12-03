@@ -1,0 +1,188 @@
+
+import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { ComparisonResult, LineItem } from "../types";
+
+// Note: process.env.API_KEY is assumed to be available as per instructions.
+
+const responseSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    claimNumber: { type: Type.STRING, description: "The Insurance Claim Number found in the header." },
+    vehicleInfo: { type: Type.STRING, description: "Year, Make, and Model of the vehicle." },
+    vin: { type: Type.STRING, description: "Vehicle Identification Number." },
+    
+    financials: {
+      type: Type.OBJECT,
+      properties: {
+        total: {
+          type: Type.OBJECT,
+          properties: {
+            original: { type: Type.NUMBER, description: "Total Gross Amount of the Original Estimate" },
+            added: { type: Type.NUMBER, description: "Net Added Amount (Supplement Total - Original Total)" },
+            final: { type: Type.NUMBER, description: "Total Gross Amount of the Supplement/Final Record" }
+          },
+          required: ["original", "added", "final"]
+        },
+        parts: {
+          type: Type.OBJECT,
+          properties: {
+            original: { type: Type.NUMBER, description: "Total Cost of Parts in Original Estimate" },
+            added: { type: Type.NUMBER, description: "Net Added Parts Cost" },
+            final: { type: Type.NUMBER, description: "Total Cost of Parts in Supplement/Final Record" }
+          },
+          required: ["original", "added", "final"]
+        },
+        labor: {
+          type: Type.OBJECT,
+          properties: {
+            original: { type: Type.NUMBER, description: "Total Cost of Labor (INCLUDING Paint Supplies/Materials) in Original Estimate" },
+            added: { type: Type.NUMBER, description: "Net Added Labor Cost (INCLUDING Paint Supplies/Materials)" },
+            final: { type: Type.NUMBER, description: "Total Cost of Labor (INCLUDING Paint Supplies/Materials) in Supplement/Final Record" }
+          },
+          required: ["original", "added", "final"]
+        },
+        tax: {
+          type: Type.OBJECT,
+          properties: {
+            original: { type: Type.NUMBER, description: "Total Tax in Original Estimate" },
+            added: { type: Type.NUMBER, description: "Net Added Tax" },
+            final: { type: Type.NUMBER, description: "Total Tax in Supplement/Final Record" }
+          },
+          required: ["original", "added", "final"]
+        }
+      },
+      required: ["total", "parts", "labor", "tax"]
+    },
+
+    categorySummaries: {
+      type: Type.ARRAY,
+      description: "List of Section Headers that have ADDED costs. Identify the Header and the Net Added amount.",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          categoryName: { type: Type.STRING, description: "The Section Header Name (e.g. 'Roof', 'Rear Bumper')" },
+          finalTotal: { type: Type.NUMBER, description: "The Final Gross Total $ amount for this section." },
+          finalLabor: { type: Type.NUMBER, description: "The Final Labor $ amount for this section." },
+          addedTotal: { type: Type.NUMBER, description: "The NET ADDED $ amount for this section (Supplement - Original)." },
+          addedLabor: { type: Type.NUMBER, description: "The NET ADDED Labor $ amount for this section." }
+        },
+        required: ["categoryName", "finalTotal", "finalLabor", "addedTotal", "addedLabor"]
+      }
+    },
+
+    addedItems: {
+      type: Type.ARRAY,
+      description: "List of line items found in the supplement that were not in the original, or quantity increases.",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          description: { type: Type.STRING, description: "Description of the line item" },
+          category: { type: Type.STRING, description: "The specific Estimate Section Header (e.g., 'Front Bumper', 'Rear Lamp', 'Roof', 'Quarter Panel', 'Rear Body'). Use the exact header text found in the document." },
+          quantity: { type: Type.NUMBER, description: "The quantity added" },
+          unitPrice: { type: Type.NUMBER, description: "Price per unit" },
+          totalPrice: { type: Type.NUMBER, description: "Total cost of this addition" },
+          reasonForAddition: { type: Type.STRING, description: "Short inference on why this was added" }
+        },
+        required: ["description", "category", "totalPrice", "quantity", "unitPrice"]
+      }
+    }
+  },
+  required: ["claimNumber", "vehicleInfo", "vin", "financials", "categorySummaries", "addedItems"]
+};
+
+export const analyzeDocuments = async (
+  originalBase64: string,
+  originalMime: string,
+  supplementBase64: string,
+  supplementMime: string
+): Promise<ComparisonResult> => {
+  
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+  const systemInstruction = `
+    You are an expert Insurance Adjuster and AI Document Analyst.
+    Your task is to compare an "Original Estimate" PDF against a "Supplement Record" PDF.
+
+    CRITICAL DOCUMENT STRUCTURE DEFINITIONS:
+    1. "ESTIMATE TOTALS" TABLE: In the Supplement PDF, the table labeled "ESTIMATE TOTALS" (and the detailed line items listed BEFORE it) represents the CUMULATIVE FINAL STATE (Original Estimate + All Supplements combined). 
+       - USE THIS TABLE to extract the "Final" values for the schema (e.g., financials.total.final, financials.parts.final).
+       - The line items in this main section represent the complete final list.
+       
+    2. "TOTALS SUMMARY" TABLE: In the Supplement PDF, the table labeled "TOTALS SUMMARY" (and the short list of items near it) represents the SUPPLEMENT SPECIFIC changes/additions. 
+       - Values here represent the "Added" or "Delta" amounts.
+
+    OBJECTIVES:
+    1. HEADER INFO: Extract Claim Number, Vehicle (Year/Make/Model), and VIN. If missing, use "N/A".
+    
+    2. FINANCIALS: 
+       - Locate the "ESTIMATE TOTALS" section in the Supplement PDF to get the TRUE Final Gross Total, Final Parts, Final Labor.
+       - Locate the "Totals" in the Original Estimate to get Original values.
+       - "Total Labor" = All Labor Operations + Paint Supplies/Materials + Hazardous Materials. (Paint Supplies are Labor, NOT Parts).
+       - Calculate "Added" values: (Final - Original) OR extract directly from "TOTALS SUMMARY" if available.
+    
+    3. LINE ITEMS & HEADERS (CRITICAL):
+       - PRIMARY IDENTIFICATION RULE: Look for line items marked with Supplement codes "S01", "S02", "S03", "S04", "S05", etc.
+       - Any line item containing "S01", "S02", "S03", "S04", or "S05" is DEFINITIVELY an added supplement item and MUST be extracted into 'addedItems'.
+       
+       - SEQUENTIAL HEADER SCANNING (DO NOT MISS THIS): 
+         - Scan the document top-to-bottom.
+         - Identify EVERY Estimate Section Header (e.g., "FRONT BUMPER", "REAR LAMPS", "ROOF", "QUARTER PANEL", "LID/GATE", "REAR BODY", "ALIGNMENT").
+         - These headers are usually Bold or Uppercase.
+         - When you find a Supplement Item (S01, etc.), look IMMEDIATELY ABOVE it to find which Section Header it belongs to.
+         - DO NOT skip any Section Headers. If a section has items, the Header MUST be captured as the 'category'.
+         
+    4. CATEGORY SUMMARIES (Page 2 Requirement):
+       - This section MUST show the "ADDED" amounts, NOT just Final totals.
+       - For every Section Header found in the Supplement items:
+         - Calculate 'addedTotal': The sum of the Net Added costs for that section.
+         - Calculate 'addedLabor': The sum of the Net Added Labor costs for that section.
+         - Ensure the sum of all 'addedTotal' values in 'categorySummaries' roughly equals 'financials.total.added' (excluding tax).
+    
+    OUTPUT:
+    Return strictly structured JSON matching the schema.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      config: {
+        systemInstruction: systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: responseSchema,
+        temperature: 0.1,
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: "DOCUMENT 1: ORIGINAL ESTIMATE" },
+            { inlineData: { mimeType: originalMime, data: originalBase64 } },
+            { text: "DOCUMENT 2: SUPPLEMENT RECORD" },
+            { inlineData: { mimeType: supplementMime, data: supplementBase64 } },
+            { text: "Analyze the differences. Remember: 'Estimate Totals' = Cumulative Final. 'Totals Summary' = Supplement Specific. Extract header info, financial breakdowns (Total/Parts/Labor/Tax). For 'categorySummaries', specifically extract the ADDED amounts (addedTotal, addedLabor) for each section. addedItems MUST capture all S01-S05 items. Paint Supplies = Labor." }
+          ]
+        }
+      ]
+    });
+
+    const text = response.text;
+    if (!text) throw new Error("No response text received from AI");
+
+    const result = JSON.parse(text) as ComparisonResult;
+    
+    // Polyfill totalAddedValue for backward compatibility if needed, or ensure it matches
+    result.totalAddedValue = result.financials.total.added;
+
+    return result;
+
+  } catch (error: any) {
+    console.error("Gemini Analysis Error:", error);
+    
+    const errorMessage = error.toString();
+    if (errorMessage.includes("xhr error") || errorMessage.includes("Rpc failed") || errorMessage.includes("500")) {
+      throw new Error("Network error. Files may be too large. Try compressing PDFs to under 4MB.");
+    }
+
+    throw new Error(error.message || "Failed to analyze documents.");
+  }
+};
