@@ -1,10 +1,10 @@
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { ComparisonResult, LineItem } from "../types";
+import { ComparisonResult, LineItem, SubroResult } from "../types";
 
 // Note: process.env.API_KEY is assumed to be available as per instructions.
 
-const responseSchema: Schema = {
+const docCompareSchema: Schema = {
   type: Type.OBJECT,
   properties: {
     claimNumber: { type: Type.STRING, description: "The Insurance Claim Number found in the header." },
@@ -90,6 +90,74 @@ const responseSchema: Schema = {
   required: ["claimNumber", "vehicleInfo", "vin", "financials", "categorySummaries", "addedItems"]
 };
 
+const subroSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    claimNumber: { type: Type.STRING },
+    insuredName: { type: Type.STRING },
+    dateOfLoss: { type: Type.STRING },
+    vehicleInfo: { type: Type.STRING },
+    demandDate: { type: Type.STRING },
+    offerDate: { type: Type.STRING },
+    
+    liability: {
+      type: Type.OBJECT,
+      properties: {
+        demandPercent: { type: Type.NUMBER },
+        offerPercent: { type: Type.NUMBER },
+        isDisputed: { type: Type.BOOLEAN }
+      }
+    },
+
+    totalDemand: { type: Type.NUMBER },
+    totalOffer: { type: Type.NUMBER },
+    totalGap: { type: Type.NUMBER },
+    gapPercentage: { type: Type.NUMBER },
+
+    rentalSpecifics: {
+      type: Type.OBJECT,
+      properties: {
+        demandDays: { type: Type.NUMBER },
+        demandRate: { type: Type.NUMBER },
+        offerDays: { type: Type.NUMBER },
+        offerRate: { type: Type.NUMBER }
+      }
+    },
+
+    categories: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING },
+          demandTotal: { type: Type.NUMBER },
+          offerTotal: { type: Type.NUMBER },
+          delta: { type: Type.NUMBER }
+        }
+      }
+    },
+
+    lineItemDisputes: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          category: { type: Type.STRING },
+          itemDescription: { type: Type.STRING },
+          demandAmount: { type: Type.NUMBER },
+          offerAmount: { type: Type.NUMBER },
+          delta: { type: Type.NUMBER },
+          status: { type: Type.STRING, enum: ['RESOLVED', 'IMPROVED', 'DISPUTED', 'WORSENED'] },
+          notes: { type: Type.STRING }
+        }
+      }
+    },
+
+    negotiationDirection: { type: Type.STRING, enum: ['POSITIVE', 'STALLED', 'NEGATIVE'] },
+    summaryText: { type: Type.STRING, description: "A detailed 2-3 sentence executive summary explaining the main changes." }
+  }
+};
+
 export const analyzeDocuments = async (
   originalBase64: string,
   originalMime: string,
@@ -148,7 +216,7 @@ export const analyzeDocuments = async (
       config: {
         systemInstruction: systemInstruction,
         responseMimeType: "application/json",
-        responseSchema: responseSchema,
+        responseSchema: docCompareSchema,
         temperature: 0.1,
       },
       contents: [
@@ -184,5 +252,79 @@ export const analyzeDocuments = async (
     }
 
     throw new Error(error.message || "Failed to analyze documents.");
+  }
+};
+
+export const analyzeSubroDocuments = async (
+  demandBase64: string,
+  demandMime: string,
+  offerBase64: string,
+  offerMime: string
+): Promise<SubroResult> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const systemInstruction = `
+    You are an expert Insurance Subrogation and Arbitration Analyst. 
+    Your job is to compare an Initial Demand Package against a Counter Offer/Arbitration Response.
+
+    OBJECTIVES:
+    1. METADATA: Extract Claim #, Insured Name, Date of Loss.
+    2. LIABILITY: Look for liability arguments. Extract percentages admitted by both sides.
+    3. RENTAL: Subrogation disputes often focus on Rental Days and Daily Rate. Extract these specifically.
+    4. FINANCIALS:
+       - Auto Damage (Repairs): Demand vs Offer.
+       - Towing/Storage/Admin fees: Demand vs Offer.
+       - Salvage: Demand vs Offer.
+    5. DISPUTES:
+       - Identify specific line items where the Offer < Demand.
+       - Categorize status:
+         - RESOLVED (Offer == Demand)
+         - IMPROVED (Offer > 0 but < Demand)
+         - DISPUTED (Offer is 0 or significantly low)
+         - WORSENED (Offer is lower than previous or unexpected)
+    6. EXECUTIVE SUMMARY (CRITICAL):
+       - In the 'summaryText' field, provide a high-quality, 2-3 sentence narrative overview.
+       - Explicitly state the MAIN reason for the gap (e.g., "The Counter Offer accepted 100% liability but reduced rental duration by 5 days and reduced the daily rate by $10.")
+       - Mention if the negotiation is progressing positively or stalled.
+    
+    OUTPUT FORMAT:
+    Return valid JSON.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      config: {
+        systemInstruction: systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: subroSchema,
+        temperature: 0.1,
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: "DOCUMENT 1: INITIAL DEMAND" },
+            { inlineData: { mimeType: demandMime, data: demandBase64 } },
+            { text: "DOCUMENT 2: COUNTER OFFER / ARBITRATION RESPONSE" },
+            { inlineData: { mimeType: offerMime, data: offerBase64 } },
+            { text: "Perform a detailed subrogation audit. Compare demand vs offer. Analyze liability, rental days/rate, and repair costs. Provide a strong Executive Summary narrative." }
+          ]
+        }
+      ]
+    });
+
+    const text = response.text;
+    if (!text) throw new Error("No response text received from AI");
+
+    return JSON.parse(text) as SubroResult;
+
+  } catch (error: any) {
+    console.error("Subro Analysis Error:", error);
+    const errorMessage = error.toString();
+    if (errorMessage.includes("xhr error") || errorMessage.includes("Rpc failed") || errorMessage.includes("500")) {
+      throw new Error("Network error. Files too large.");
+    }
+    throw new Error(error.message || "Failed to analyze subro documents.");
   }
 };

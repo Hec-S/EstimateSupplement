@@ -55,3 +55,66 @@ export enum DocType {
   ORIGINAL = 'Original Estimate',
   SUPPLEMENT = 'Supplement Record'
 }
+
+// --- SUBRO/ARB APP TYPES ---
+
+export enum SubroDocType {
+  DEMAND = 'Initial Demand',
+  OFFER = 'Counter Offer/Arb'
+}
+
+export interface SubroDispute {
+  category: string;
+  itemDescription: string;
+  demandAmount: number;
+  offerAmount: number;
+  delta: number;
+  status: 'RESOLVED' | 'IMPROVED' | 'DISPUTED' | 'WORSENED';
+  notes: string; // Reason for dispute or resolution
+}
+
+export interface SubroCategory {
+  name: string; // e.g., "Auto Damage", "Rental", "Towing", "Salvage"
+  demandTotal: number;
+  offerTotal: number;
+  delta: number;
+}
+
+export interface SubroResult {
+  // Metadata
+  claimNumber: string;
+  insuredName: string;
+  dateOfLoss: string;
+  vehicleInfo: string;
+  
+  // High Level
+  demandDate: string;
+  offerDate: string;
+  liability: {
+    demandPercent: number;
+    offerPercent: number;
+    isDisputed: boolean;
+  };
+  
+  // Financials
+  totalDemand: number;
+  totalOffer: number;
+  totalGap: number; // demand - offer
+  gapPercentage: number; 
+
+  // Breakdowns
+  categories: SubroCategory[];
+  rentalSpecifics?: {
+    demandDays: number;
+    demandRate: number;
+    offerDays: number;
+    offerRate: number;
+  };
+
+  // Detailed Disputes
+  lineItemDisputes: SubroDispute[];
+  
+  // Analysis
+  negotiationDirection: 'POSITIVE' | 'STALLED' | 'NEGATIVE';
+  summaryText: string;
+}
