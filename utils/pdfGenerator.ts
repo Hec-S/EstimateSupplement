@@ -249,55 +249,76 @@ export const generateDiffPDF = (data: ComparisonResult) => {
     },
   });
 
-  // --- PAGE 3+: DETAILED ITEMS ---
+  // --- PAGE 3: NEEDS WARRANTY SECTION ---
   doc.addPage();
+
+  // Title
   doc.setFontSize(16);
   doc.setTextColor(40, 40, 40);
-  doc.text("Detailed Supplement Line Items", margin, 20);
+  doc.setFont("helvetica", "bold");
+  doc.text("NEEDS WARRANTY", margin, 20);
 
-  const groupedItems = data.addedItems.reduce((acc, item) => {
-    const category = item.category || 'Uncategorized';
-    if (!acc[category]) acc[category] = [];
-    acc[category].push(item);
-    return acc;
-  }, {} as Record<string, LineItem[]>);
+  // Disclaimer Text
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(60, 60, 60);
   
-  const addedCategories = Object.keys(groupedItems).sort();
-  const detailBody: any[] = [];
+  const warrantyText = "Based on the body shop you selected, the following parts should be covered under their warranty since they were newly installed or replaced. Please note that Fred Loya is not involved in, nor responsible for, any repairs performed by the body shop.";
+  
+  const splitWarranty = doc.splitTextToSize(warrantyText, pageWidth - (margin * 2));
+  doc.text(splitWarranty, margin, 30);
 
-  addedCategories.forEach(category => {
-    const categoryTotal = groupedItems[category].reduce((sum, item) => sum + item.totalPrice, 0);
+  // Items Table
+  // Filter: Must include Part Number AND (Operation == "Repl" OR "Rpr")
+  const groupedItems: Record<string, LineItem[]> = {};
+  
+  data.addedItems.forEach(item => {
+    // 1. Check for valid part number
+    const hasPartNumber = item.partNumber && item.partNumber.trim().length > 1 && item.partNumber.toUpperCase() !== "N/A";
+    
+    // 2. Check for "Rpr and Repl" operations
+    // Note: We interpret "Rpr and Repl" as "Repl" OR "Rpr" operation type.
+    const op = (item.operation || '').toUpperCase();
+    const isReplOrRpr = op.includes('REPL') || op.includes('RPR') || op === 'REP';
 
-    detailBody.push([{ 
-      content: `${category.toUpperCase()} - ADDED: $${categoryTotal.toFixed(2)}`, 
-      colSpan: 5, 
-      styles: { fillColor: [240, 240, 240], textColor: [50, 50, 50], fontStyle: 'bold', halign: 'left' } 
-    }]);
+    if (hasPartNumber && isReplOrRpr) {
+      const cat = item.category || 'Other';
+      if (!groupedItems[cat]) groupedItems[cat] = [];
+      groupedItems[cat].push(item);
+    }
+  });
+  
+  const categories = Object.keys(groupedItems).sort();
+  const warrantyBody: any[] = [];
 
-    groupedItems[category].forEach(item => {
-      detailBody.push([
-        item.description,
-        item.reasonForAddition || 'N/A',
-        item.quantity.toString(),
-        `$${item.unitPrice.toFixed(2)}`,
-        `$${item.totalPrice.toFixed(2)}`
-      ]);
+  categories.forEach(cat => {
+    // Add Category Header
+    warrantyBody.push([
+      { content: cat.toUpperCase(), colSpan: 2, styles: { fillColor: [240, 240, 240], fontStyle: 'bold', textColor: [60, 60, 60] } }
+    ]);
+    
+    // Add Items (Part # and Description only, no Quantity)
+    groupedItems[cat].forEach(item => {
+       warrantyBody.push([
+         item.partNumber || '-', // Column 1: Part #
+         item.description        // Column 2: Description
+       ]);
     });
   });
 
+  if (warrantyBody.length === 0) {
+    warrantyBody.push([{ content: "No replacement parts matching warranty criteria detected.", colSpan: 2, styles: { halign: 'center', fontStyle: 'italic', textColor: [150, 150, 150] } }]);
+  }
+
   autoTable(doc, {
-    startY: 30,
-    head: [['Description', 'Reason', 'Qty', 'Unit Price', 'Total Added']],
-    body: detailBody,
-    headStyles: { fillColor: [100, 116, 139] },
-    footStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: 'bold' },
+    startY: 30 + (splitWarranty.length * 5) + 5,
+    head: [['Part #', 'Item / Description']], // Removed Quantity Column
+    body: warrantyBody,
+    headStyles: { fillColor: [44, 62, 80] },
     theme: 'grid',
     columnStyles: {
-      0: { cellWidth: 'auto' },
-      1: { cellWidth: 40 },
-      2: { cellWidth: 15, halign: 'center' },
-      3: { cellWidth: 25, halign: 'right' },
-      4: { cellWidth: 25, halign: 'right' },
+      0: { cellWidth: 50 }, // Part #
+      1: { cellWidth: 'auto' } // Desc
     },
   });
 

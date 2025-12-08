@@ -78,12 +78,15 @@ const docCompareSchema: Schema = {
         properties: {
           description: { type: Type.STRING, description: "Description of the line item" },
           category: { type: Type.STRING, description: "The specific Estimate Section Header (e.g., 'Front Bumper', 'Rear Lamp', 'Roof', 'Quarter Panel', 'Rear Body'). Use the exact header text found in the document." },
+          partNumber: { type: Type.STRING, description: "The specific Part Number if available (e.g., 55396-0E090). Leave empty if not a part." },
+          operation: { type: Type.STRING, description: "The Operation code found on the line (e.g., 'Repl', 'Rpr', 'R&I', 'Subl')." },
+          itemType: { type: Type.STRING, enum: ["Part", "Labor", "Sublet", "Other"], description: "Classify the item type." },
           quantity: { type: Type.NUMBER, description: "The quantity added" },
           unitPrice: { type: Type.NUMBER, description: "Price per unit" },
           totalPrice: { type: Type.NUMBER, description: "Total cost of this addition" },
           reasonForAddition: { type: Type.STRING, description: "Short inference on why this was added" }
         },
-        required: ["description", "category", "totalPrice", "quantity", "unitPrice"]
+        required: ["description", "category", "totalPrice", "quantity", "unitPrice", "itemType"]
       }
     }
   },
@@ -158,6 +161,25 @@ const subroSchema: Schema = {
   }
 };
 
+// Permissive safety settings to avoid blocking insurance/damage content
+const SAFETY_SETTINGS = [
+  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }
+];
+
+// Helper to clean markdown code blocks from response
+const cleanJsonText = (text: string): string => {
+  if (!text) return "";
+  let cleaned = text.trim();
+  // Remove markdown wrapping like ```json ... ```
+  cleaned = cleaned.replace(/^```json\s*/, "").replace(/\s*```$/, "");
+  // Remove generic markdown wrapping ``` ... ```
+  cleaned = cleaned.replace(/^```\s*/, "").replace(/\s*```$/, "");
+  return cleaned;
+};
+
 export const analyzeDocuments = async (
   originalBase64: string,
   originalMime: string,
@@ -167,6 +189,7 @@ export const analyzeDocuments = async (
   
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+  // Explicitly inject schema into prompt to avoid 500 errors from strict server-side schema validation on large tokens
   const systemInstruction = `
     You are an expert Insurance Adjuster and AI Document Analyst.
     Your task is to compare an "Original Estimate" PDF against a "Supplement Record" PDF.
@@ -192,32 +215,39 @@ export const analyzeDocuments = async (
        - PRIMARY IDENTIFICATION RULE: Look for line items marked with Supplement codes "S01", "S02", "S03", "S04", "S05", etc.
        - Any line item containing "S01", "S02", "S03", "S04", or "S05" is DEFINITIVELY an added supplement item and MUST be extracted into 'addedItems'.
        
-       - SEQUENTIAL HEADER SCANNING (DO NOT MISS THIS): 
+       - PART NUMBERS, OPERATIONS & TYPES:
+         - Extract the "Part Number" for any item that is a replacement part. These are usually alphanumeric codes (e.g., "55396-0E090") listed next to the description.
+         - Extract the "Operation" code (e.g., 'Repl', 'Rpr', 'R&I', 'Subl') usually found in the first column or near the description.
+         - Classify 'itemType' accurately: 'Part' (physical parts), 'Labor' (repair hours, refinish hours), 'Sublet' (towing, glass), or 'Other'.
+         - Paint Supplies are 'Labor' or 'Other', NOT 'Part'.
+         
+       - SEQUENTIAL HEADER SCANNING: 
          - Scan the document top-to-bottom.
          - Identify EVERY Estimate Section Header (e.g., "FRONT BUMPER", "REAR LAMPS", "ROOF", "QUARTER PANEL", "LID/GATE", "REAR BODY", "ALIGNMENT").
-         - These headers are usually Bold or Uppercase.
          - When you find a Supplement Item (S01, etc.), look IMMEDIATELY ABOVE it to find which Section Header it belongs to.
-         - DO NOT skip any Section Headers. If a section has items, the Header MUST be captured as the 'category'.
          
     4. CATEGORY SUMMARIES (Page 2 Requirement):
        - This section MUST show the "ADDED" amounts, NOT just Final totals.
        - For every Section Header found in the Supplement items:
          - Calculate 'addedTotal': The sum of the Net Added costs for that section.
          - Calculate 'addedLabor': The sum of the Net Added Labor costs for that section.
-         - Ensure the sum of all 'addedTotal' values in 'categorySummaries' roughly equals 'financials.total.added' (excluding tax).
     
     OUTPUT:
-    Return strictly structured JSON matching the schema.
+    Return strictly structured JSON matching the following schema. Do not use Markdown formatting in the response.
+    
+    ${JSON.stringify(docCompareSchema, null, 2)}
   `;
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3-pro-preview',
       config: {
         systemInstruction: systemInstruction,
         responseMimeType: "application/json",
-        responseSchema: docCompareSchema,
+        // responseSchema: docCompareSchema, // Removed to prevent INTERNAL 500 errors on large complex docs
         temperature: 0.1,
+        maxOutputTokens: 65536, // Maximum for high-volume JSON output
+        safetySettings: SAFETY_SETTINGS,
       },
       contents: [
         {
@@ -227,14 +257,19 @@ export const analyzeDocuments = async (
             { inlineData: { mimeType: originalMime, data: originalBase64 } },
             { text: "DOCUMENT 2: SUPPLEMENT RECORD" },
             { inlineData: { mimeType: supplementMime, data: supplementBase64 } },
-            { text: "Analyze the differences. Remember: 'Estimate Totals' = Cumulative Final. 'Totals Summary' = Supplement Specific. Extract header info, financial breakdowns (Total/Parts/Labor/Tax). For 'categorySummaries', specifically extract the ADDED amounts (addedTotal, addedLabor) for each section. addedItems MUST capture all S01-S05 items. Paint Supplies = Labor." }
+            { text: "Analyze the differences. Remember: 'Estimate Totals' = Cumulative Final. 'Totals Summary' = Supplement Specific. Extract header info, financial breakdowns. Identify all S01+ items, extract PART NUMBERS and OPERATION CODES (Repl, Rpr), and ensure itemType is correct." }
           ]
         }
       ]
     });
 
-    const text = response.text;
-    if (!text) throw new Error("No response text received from AI");
+    let text = response.text;
+    if (!text) {
+      console.warn("No text in response. Finish Reason:", response.candidates?.[0]?.finishReason);
+      throw new Error(`AI generated empty response. Finish Reason: ${response.candidates?.[0]?.finishReason || 'Unknown'}`);
+    }
+
+    text = cleanJsonText(text);
 
     const result = JSON.parse(text) as ComparisonResult;
     
@@ -248,7 +283,11 @@ export const analyzeDocuments = async (
     
     const errorMessage = error.toString();
     if (errorMessage.includes("xhr error") || errorMessage.includes("Rpc failed") || errorMessage.includes("500")) {
-      throw new Error("Network error. Files may be too large. Try compressing PDFs to under 4MB.");
+      throw new Error("Network error or AI Service Overload (500). Please try again or compress PDFs to under 4MB.");
+    }
+    
+    if (errorMessage.includes("JSON") || errorMessage.includes("Expected")) {
+       throw new Error("Analysis failed. The document output was incomplete or invalid JSON.");
     }
 
     throw new Error(error.message || "Failed to analyze documents.");
@@ -282,23 +321,27 @@ export const analyzeSubroDocuments = async (
          - IMPROVED (Offer > 0 but < Demand)
          - DISPUTED (Offer is 0 or significantly low)
          - WORSENED (Offer is lower than previous or unexpected)
+       - IMPORTANT: Focus on items with a Delta > $5.00 to save tokens. Group insignificant miscellaneous items if needed.
     6. EXECUTIVE SUMMARY (CRITICAL):
        - In the 'summaryText' field, provide a high-quality, 2-3 sentence narrative overview.
        - Explicitly state the MAIN reason for the gap (e.g., "The Counter Offer accepted 100% liability but reduced rental duration by 5 days and reduced the daily rate by $10.")
        - Mention if the negotiation is progressing positively or stalled.
     
     OUTPUT FORMAT:
-    Return valid JSON.
+    Return strictly structured JSON matching the following schema:
+    ${JSON.stringify(subroSchema, null, 2)}
   `;
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3-pro-preview',
       config: {
         systemInstruction: systemInstruction,
         responseMimeType: "application/json",
-        responseSchema: subroSchema,
+        // responseSchema: subroSchema, // Removed to prevent 500 errors
         temperature: 0.1,
+        maxOutputTokens: 65536, // Increased to prevent truncation
+        safetySettings: SAFETY_SETTINGS,
       },
       contents: [
         {
@@ -314,8 +357,13 @@ export const analyzeSubroDocuments = async (
       ]
     });
 
-    const text = response.text;
-    if (!text) throw new Error("No response text received from AI");
+    let text = response.text;
+    if (!text) {
+      console.warn("No text in subro response. Finish Reason:", response.candidates?.[0]?.finishReason);
+      throw new Error(`AI generated empty response. Finish Reason: ${response.candidates?.[0]?.finishReason || 'Unknown'}`);
+    }
+
+    text = cleanJsonText(text);
 
     return JSON.parse(text) as SubroResult;
 
@@ -323,7 +371,10 @@ export const analyzeSubroDocuments = async (
     console.error("Subro Analysis Error:", error);
     const errorMessage = error.toString();
     if (errorMessage.includes("xhr error") || errorMessage.includes("Rpc failed") || errorMessage.includes("500")) {
-      throw new Error("Network error. Files too large.");
+      throw new Error("Network error or AI Service Overload. Please retry.");
+    }
+    if (errorMessage.includes("JSON") || errorMessage.includes("Expected")) {
+       throw new Error("Analysis failed due to response complexity. Please try again.");
     }
     throw new Error(error.message || "Failed to analyze subro documents.");
   }

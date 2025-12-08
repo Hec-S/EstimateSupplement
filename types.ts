@@ -6,6 +6,9 @@ export interface LineItem {
   unitPrice: number;
   totalPrice: number;
   reasonForAddition?: string;
+  partNumber?: string;
+  itemType?: 'Part' | 'Labor' | 'Sublet' | 'Other';
+  operation?: string; // e.g. "Repl", "Rpr", "R&I"
 }
 
 export interface FinancialBreakdown {
