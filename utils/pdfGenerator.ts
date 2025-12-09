@@ -73,7 +73,7 @@ export const generateDiffPDF = (data: ComparisonResult) => {
   // Item 1: Claim
   doc.setTextColor(...colors.labelGray);
   doc.setFont("helvetica", "bold");
-  doc.text("1. Claim #:", margin + boxPadding, boxY);
+  doc.text("Claim #:", margin + boxPadding, boxY);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(...colors.textGray);
   doc.text(data.claimNumber, margin + boxPadding + 30, boxY);
@@ -83,7 +83,7 @@ export const generateDiffPDF = (data: ComparisonResult) => {
   // Item 2: Vehicle
   doc.setTextColor(...colors.labelGray);
   doc.setFont("helvetica", "bold");
-  doc.text("2. Vehicle:", margin + boxPadding, boxY - lineHeight); 
+  doc.text("Vehicle:", margin + boxPadding, boxY - lineHeight); 
   doc.setTextColor(...colors.textGray);
   doc.setFont("helvetica", "normal");
   doc.text(vehicleDescLines, margin + boxPadding, boxY - lineHeight + 6); 
@@ -93,72 +93,122 @@ export const generateDiffPDF = (data: ComparisonResult) => {
   // Item 3: VIN
   doc.setTextColor(...colors.labelGray);
   doc.setFont("helvetica", "bold");
-  doc.text("3. VIN:", margin + boxPadding, boxY - lineHeight);
+  doc.text("VIN:", margin + boxPadding, boxY - lineHeight);
   doc.setTextColor(...colors.textGray);
   doc.setFont("helvetica", "normal");
   doc.text(data.vin, margin + boxPadding + 20, boxY - lineHeight);
 
   yPos += sectionHeight + 15;
 
-  // 3. Financial Summary
-  // Helper to draw equation rows with borders
-  const drawFinancialRow = (title: string, orig: number, added: number, final: number) => {
-    // Title
+  // 3. Financial Summary (Hierarchical)
+  
+  // -- Intro Text --
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(...colors.textGray);
+  doc.text("Below shows your original estimate, what was added, and your new total after all changes.", margin, yPos);
+  yPos += 8;
+
+  // -- Main Total Header --
+  doc.setFontSize(12);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...colors.labelGray);
+  doc.text("Total Estimate", margin, yPos);
+  yPos += 6;
+
+  // -- Main Total Equation (Mixed Styling) --
+  doc.setFontSize(10);
+  doc.setTextColor(...colors.textGray);
+  
+  let currentX = margin;
+
+  // Segment 1: Original
+  doc.setFont("helvetica", "normal");
+  const mainP1 = `Original Estimate ($${data.financials.total.original.toFixed(2)}) `;
+  doc.text(mainP1, currentX, yPos);
+  currentX += doc.getTextWidth(mainP1);
+
+  // Segment 2: ADDED (Bold)
+  doc.setFont("helvetica", "bold");
+  const mainP2 = `ADDED ($${data.financials.total.added.toFixed(2)})`;
+  doc.text(mainP2, currentX, yPos);
+  currentX += doc.getTextWidth(mainP2);
+
+  // Segment 3: = TOTAL
+  doc.setFont("helvetica", "normal");
+  const mainP3 = ` = TOTAL `;
+  doc.text(mainP3, currentX, yPos);
+  currentX += doc.getTextWidth(mainP3);
+
+  // Segment 4: Final (Bold)
+  doc.setFont("helvetica", "bold");
+  const mainP4 = `($${data.financials.total.final.toFixed(2)})`;
+  doc.text(mainP4, currentX, yPos);
+  
+  yPos += 8; // Spacing before sub-items
+
+  // Helper to draw indented breakdown items with bolding
+  const drawBreakdownItem = (label: string, orig: number, added: number, final: number) => {
+    const indent = margin + 8; // Indent 8mm
+    
+    // Bullet Title
     doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
     doc.setTextColor(...colors.labelGray);
-    doc.text(title, margin, yPos);
-    yPos += 6;
-    
-    // Equation
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(...colors.textGray);
-    
-    // Construct equation text: "Original Estimate ($1917.19) ADDED ($1674.80) = TOTAL "
-    let labelType = "Estimate";
-    if (title.includes("Parts")) labelType = "Parts";
-    if (title.includes("Labor")) labelType = "Labor";
-    
-    const part1 = `Original ${labelType} ($${orig.toFixed(2)}) ADDED ($${added.toFixed(2)}) = TOTAL `;
-    const part2 = `($${final.toFixed(2)})`;
-    
-    doc.text(part1, margin, yPos);
-    const p1W = doc.getTextWidth(part1);
-    
-    // Highlighted Total
-    doc.setFont("helvetica", "bold");
-    doc.text(part2, margin + p1W, yPos);
-    
+    doc.text(`• ${label}`, indent, yPos);
     yPos += 5;
-    
-    // Divider Line
-    doc.setDrawColor(...colors.borderLine);
-    doc.setLineWidth(0.3);
-    doc.line(margin, yPos, pageWidth - margin, yPos);
+
+    // Equation with mixed styling
+    doc.setTextColor(...colors.textGray);
+    let itemX = indent;
+    const type = label.includes("Parts") ? "Parts" : "Labor";
+
+    // Seg 1
+    doc.setFont("helvetica", "normal");
+    const p1 = `Original ${type} ($${orig.toFixed(2)}) `;
+    doc.text(p1, itemX, yPos);
+    itemX += doc.getTextWidth(p1);
+
+    // Seg 2: ADDED (Bold)
+    doc.setFont("helvetica", "bold");
+    const p2 = `ADDED ($${added.toFixed(2)})`;
+    doc.text(p2, itemX, yPos);
+    itemX += doc.getTextWidth(p2);
+
+    // Seg 3
+    doc.setFont("helvetica", "normal");
+    const p3 = ` = TOTAL `;
+    doc.text(p3, itemX, yPos);
+    itemX += doc.getTextWidth(p3);
+
+    // Seg 4
+    doc.setFont("helvetica", "bold");
+    const p4 = `($${final.toFixed(2)})`;
+    doc.text(p4, itemX, yPos);
     
     yPos += 8;
   };
 
-  drawFinancialRow("4. Total Estimate", data.financials.total.original, data.financials.total.added, data.financials.total.final);
-  drawFinancialRow("5. Parts Total", data.financials.parts.original, data.financials.parts.added, data.financials.parts.final);
-  
-  // Last row manually to avoid bottom border if desired, or match style
+  // -- Indented Sub-items --
+  drawBreakdownItem("Parts Total", data.financials.parts.original, data.financials.parts.added, data.financials.parts.final);
+  drawBreakdownItem("Labor Total", data.financials.labor.original, data.financials.labor.added, data.financials.labor.final);
+
+  // Formula Text (Moved from top)
   doc.setFont("helvetica", "bold");
-  doc.setTextColor(...colors.labelGray);
-  doc.text("6. Labor Total", margin, yPos);
-  yPos += 6;
-  doc.setFont("helvetica", "normal");
   doc.setTextColor(...colors.textGray);
-  const l1 = `Original Labor ($${data.financials.labor.original.toFixed(2)}) ADDED ($${data.financials.labor.added.toFixed(2)}) = TOTAL `;
-  const l2 = `($${data.financials.labor.final.toFixed(2)})`;
-  doc.text(l1, margin, yPos);
-  const l1W = doc.getTextWidth(l1);
-  doc.setFont("helvetica", "bold");
-  doc.text(l2, margin + l1W, yPos);
+  doc.text("Parts Total + Labor Total = Total Estimate", margin + 8, yPos);
+  yPos += 8;
+
+  // Divider Line after the whole block
+  yPos += 2;
+  doc.setDrawColor(...colors.borderLine);
+  doc.setLineWidth(0.3);
+  doc.line(margin, yPos, pageWidth - margin, yPos);
   
   yPos += 15;
 
   // 4. Disclaimer Box (Red)
-  const dTitle = "7. IMPORTANT DISCLAIMER:";
+  const dTitle = "IMPORTANT DISCLAIMER:";
   const dText1 = "ALL ESTIMATE AND SUPPLEMENT PAYMENTS WILL BE ISSUED TO THE VEHICLE OWNER.";
   const dText2 = "The repair contract exists solely between the vehicle owner and the repair facility. The insurance company is not involved in this agreement and does not assume responsibility for repair quality, timelines, or costs. All repair-related disputes must be handled directly with the repair facility.";
   const dText3 = "Please note: Any misrepresentation of repairs, labor, parts, or supplements—including unnecessary operations or inflated charges—may constitute insurance fraud and will result in further review or investigation.";
@@ -208,11 +258,14 @@ export const generateDiffPDF = (data: ComparisonResult) => {
   doc.setFontSize(16);
   doc.setTextColor(40, 40, 40);
   doc.setFont("helvetica", "bold");
-  doc.text("Supplement Added Value Summary", margin, 20);
+  doc.text("What was Added", margin, 20);
 
   const summaryBody: any[] = [];
   const summaries = data.categorySummaries || [];
+  
+  // Filter active summaries and sort by addedTotal (highest first)
   const activeSummaries = summaries.filter(cat => Math.abs(cat.addedTotal) > 0.01);
+  activeSummaries.sort((a, b) => b.addedTotal - a.addedTotal);
 
   activeSummaries.forEach(cat => {
     summaryBody.push([
