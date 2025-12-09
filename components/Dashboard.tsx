@@ -74,13 +74,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
             <div className="absolute bottom-0 left-0 h-1 bg-indigo-500 w-0 group-hover:w-full transition-all duration-300"></div>
           </div>
 
-           {/* Placeholder Card 2 */}
-           <div className="bg-slate-50 rounded-xl border border-dashed border-slate-300 p-8 flex flex-col items-center justify-center text-center opacity-60 hover:opacity-100 transition-opacity">
-            <div className="w-14 h-14 bg-slate-200 rounded-2xl flex items-center justify-center text-slate-400 mb-4">
-              <i className="fas fa-history text-2xl"></i>
+           {/* Valuation Compare Card (New) */}
+           <div 
+            onClick={() => onNavigate('valuationCompare')}
+            className="bg-white rounded-xl border border-slate-200 shadow-sm hover:shadow-lg transition-all cursor-pointer group overflow-hidden relative"
+          >
+            <div className="p-8">
+              <div className="w-14 h-14 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 mb-6 group-hover:scale-110 transition-transform duration-300 shadow-sm border border-blue-100">
+                <i className="fas fa-car-side text-2xl"></i>
+              </div>
+              <h3 className="text-xl font-bold text-slate-900 mb-3 group-hover:text-blue-600 transition-colors">Valuation Compare</h3>
+              <p className="text-slate-500 text-sm leading-relaxed mb-6">
+                Compare CCC Valuation reports against CarFax history. Detect outliers in Mileage, Options, and Condition ratings.
+              </p>
+              <div className="flex items-center text-blue-600 font-bold text-sm uppercase tracking-wide">
+                <span>Open Tool</span>
+                <i className="fas fa-arrow-right ml-2 group-hover:translate-x-1 transition-transform"></i>
+              </div>
             </div>
-            <h3 className="text-lg font-bold text-slate-500 mb-1">Audit Log</h3>
-            <span className="inline-block px-3 py-1 bg-slate-200 text-slate-500 text-xs rounded-full font-medium">Coming Soon</span>
+            <div className="absolute bottom-0 left-0 h-1 bg-blue-500 w-0 group-hover:w-full transition-all duration-300"></div>
           </div>
         </div>
       </main>

@@ -121,3 +121,42 @@ export interface SubroResult {
   negotiationDirection: 'POSITIVE' | 'STALLED' | 'NEGATIVE';
   summaryText: string;
 }
+
+// --- VALUATION COMPARE TYPES ---
+
+export enum ValuationDocType {
+  CCC = 'CCC Valuation Report',
+  CARFAX = 'CarFax Valuation Report'
+}
+
+export interface ValuationOutlier {
+  category: string; // e.g., "Mileage", "Condition", "Options", "Value"
+  description: string;
+  cccValue: string | number;
+  carfaxValue: string | number;
+  severity: 'HIGH' | 'MEDIUM' | 'LOW'; // High = Major value impact
+  note: string;
+}
+
+export interface ValuationResult {
+  vehicleInfo: {
+    vin: string;
+    yearMakeModel: string;
+    trim: string;
+  };
+  
+  comparison: {
+    cccTotalValue: number;
+    carfaxTotalValue: number;
+    valueDelta: number;
+    
+    cccMileage: number;
+    carfaxMileage: number;
+    
+    matchStatus: 'PERFECT_MATCH' | 'MINOR_DISCREPANCIES' | 'SIGNIFICANT_OUTLIERS';
+  };
+
+  outliers: ValuationOutlier[];
+  
+  summary: string;
+}

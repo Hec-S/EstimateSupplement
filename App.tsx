@@ -3,8 +3,9 @@ import React, { useState } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { DocCompareTool } from './components/DocCompareTool';
 import { SubroArbTool } from './components/SubroArbTool';
+import { ValuationCompareTool } from './components/ValuationCompareTool';
 
-type ViewState = 'dashboard' | 'docCompare' | 'subroArb';
+type ViewState = 'dashboard' | 'docCompare' | 'subroArb' | 'valuationCompare';
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewState>('dashboard');
@@ -15,6 +16,8 @@ const App: React.FC = () => {
       setCurrentView('docCompare');
     } else if (view === 'subroArb') {
       setCurrentView('subroArb');
+    } else if (view === 'valuationCompare') {
+      setCurrentView('valuationCompare');
     } else {
       console.warn(`Unknown view: ${view}`);
     }
@@ -36,6 +39,10 @@ const App: React.FC = () => {
 
       {currentView === 'subroArb' && (
         <SubroArbTool onBack={handleBackToDashboard} />
+      )}
+
+      {currentView === 'valuationCompare' && (
+        <ValuationCompareTool onBack={handleBackToDashboard} />
       )}
     </>
   );

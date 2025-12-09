@@ -1,11 +1,12 @@
+
 import React, { ChangeEvent, useState } from 'react';
-import { FileData, DocType } from '../types';
+import { FileData, DocType, SubroDocType, ValuationDocType } from '../types';
 
 interface FileUploaderProps {
-  type: DocType;
+  type: DocType | SubroDocType | ValuationDocType;
   fileData: FileData | null;
-  onFileSelect: (type: DocType, file: File, base64: string) => void;
-  onClear: (type: DocType) => void;
+  onFileSelect: (type: any, file: File, base64: string) => void;
+  onClear: (type: any) => void;
   disabled?: boolean;
 }
 
@@ -46,10 +47,18 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
 
   const isPDF = fileData?.file.type === 'application/pdf';
 
+  // Determine Icon based on type content
+  let iconClass = 'fa-file-alt';
+  if (type === DocType.ORIGINAL || type === SubroDocType.DEMAND || type === ValuationDocType.CCC) {
+    iconClass = 'fa-file-invoice';
+  } else {
+    iconClass = 'fa-file-signature';
+  }
+
   return (
     <div className="flex flex-col h-full">
       <h3 className="text-lg font-semibold text-slate-700 mb-3 flex items-center gap-2">
-        <i className={`fas ${type === DocType.ORIGINAL ? 'fa-file-invoice' : 'fa-file-signature'} text-brand-500`}></i>
+        <i className={`fas ${iconClass} text-brand-500`}></i>
         {type}
       </h3>
       

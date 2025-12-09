@@ -1,6 +1,5 @@
-
-import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { ComparisonResult, LineItem, SubroResult } from "../types";
+import { GoogleGenAI, Type, Schema, HarmCategory, HarmBlockThreshold } from "@google/genai";
+import { ComparisonResult, LineItem, SubroResult, ValuationResult } from "../types";
 
 // Note: process.env.API_KEY is assumed to be available as per instructions.
 
@@ -158,15 +157,61 @@ const subroSchema: Schema = {
 
     negotiationDirection: { type: Type.STRING, enum: ['POSITIVE', 'STALLED', 'NEGATIVE'] },
     summaryText: { type: Type.STRING, description: "A detailed 2-3 sentence executive summary explaining the main changes." }
-  }
+  },
+  required: ["claimNumber", "totalDemand", "totalOffer", "summaryText"]
+};
+
+const valuationSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    vehicleInfo: {
+      type: Type.OBJECT,
+      properties: {
+        vin: { type: Type.STRING, description: "The 17-character Vehicle Identification Number. Must NOT be null. Look for 'VIN:' or 'Vehicle ID'." },
+        yearMakeModel: { type: Type.STRING, description: "e.g., 2020 Toyota Camry LE. Must NOT be null." },
+        trim: { type: Type.STRING, description: "Trim level if available." }
+      },
+      required: ["vin", "yearMakeModel"]
+    },
+    comparison: {
+      type: Type.OBJECT,
+      properties: {
+        cccTotalValue: { type: Type.NUMBER, description: "Total Adjusted Value from CCC" },
+        carfaxTotalValue: { type: Type.NUMBER, description: "Retail Value from CarFax History Based Value" },
+        valueDelta: { type: Type.NUMBER },
+        cccMileage: { type: Type.NUMBER },
+        carfaxMileage: { type: Type.NUMBER },
+        matchStatus: { type: Type.STRING, enum: ['PERFECT_MATCH', 'MINOR_DISCREPANCIES', 'SIGNIFICANT_OUTLIERS'] }
+      },
+      required: ["cccTotalValue", "carfaxTotalValue", "matchStatus"]
+    },
+    outliers: {
+      type: Type.ARRAY,
+      description: "List ANY discrepancies found between the two reports (Options, Mileage, Condition, etc.)",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          category: { type: Type.STRING, description: "Category of mismatch (e.g. Mileage, Options, Condition)" },
+          description: { type: Type.STRING },
+          cccValue: { type: Type.STRING, description: "Value as stated in CCC" },
+          carfaxValue: { type: Type.STRING, description: "Value as stated in CarFax" },
+          severity: { type: Type.STRING, enum: ['HIGH', 'MEDIUM', 'LOW'] },
+          note: { type: Type.STRING }
+        },
+        required: ["category", "description", "severity"]
+      }
+    },
+    summary: { type: Type.STRING, description: "A short text summary of the comparison results." }
+  },
+  required: ["vehicleInfo", "comparison", "outliers", "summary"]
 };
 
 // Permissive safety settings to avoid blocking insurance/damage content
 const SAFETY_SETTINGS = [
-  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }
+  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE }
 ];
 
 // Helper to clean markdown code blocks from response
@@ -377,5 +422,82 @@ export const analyzeSubroDocuments = async (
        throw new Error("Analysis failed due to response complexity. Please try again.");
     }
     throw new Error(error.message || "Failed to analyze subro documents.");
+  }
+};
+
+export const analyzeValuationDocuments = async (
+  cccBase64: string,
+  cccMime: string,
+  carfaxBase64: string,
+  carfaxMime: string
+): Promise<ValuationResult> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const systemInstruction = `
+    You are an expert Auto Valuation Analyst. 
+    Your job is to compare a "CCC Valuation Report" against a "CarFax Valuation/History Report".
+
+    OBJECTIVES:
+    1. METADATA (HIGHEST PRIORITY): 
+       - You MUST extract the VIN (17-char alphanumeric). Look at the top right or left of the headers on EVERY page.
+       - Look for labels: "VIN:", "Vehicle ID:", "Vehicle Identification Number".
+       - Look for the Vehicle Description (Year Make Model) usually at the very top of the first page (e.g. "2018 Ford F-150").
+       - Check BOTH documents. If one is missing it, take it from the other.
+       - You MUST populate the 'vehicleInfo' object. 'vin' and 'yearMakeModel' are REQUIRED.
+
+    2. DATA EXTRACTION:
+       - CCC: Extract the "Total Adjusted Vehicle Value" (or similar final value). Extract CCC Mileage.
+       - CarFax: Extract "History Based Value" (Retail or Private Party, whichever is prominent). Extract CarFax Last Reported Mileage.
+    
+    3. OUTLIER ANALYSIS (The most important part):
+       - Compare Options/Features: Does CCC list navigation but CarFax doesn't? Does CarFax show an accident history that CCC ignored?
+       - Compare Condition: Does CCC rate condition as Average but CarFax suggests Excellent/Poor?
+       - Compare Mileage: Is there a significant discrepancy (>1000 miles)?
+    
+    4. REPORTING:
+       - If there are NO discrepancies, return 'matchStatus': 'PERFECT_MATCH' and empty outliers.
+       - If there are discrepancies, list them in the 'outliers' array with severity.
+       - 'outliers' should be SPECIFIC (e.g. "CCC lists Leather Seats, CarFax Build Data lists Cloth").
+    
+    OUTPUT FORMAT:
+    Return strictly structured JSON matching the following schema. Ensure all REQUIRED fields are populated.
+    ${JSON.stringify(valuationSchema, null, 2)}
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      config: {
+        systemInstruction: systemInstruction,
+        responseMimeType: "application/json",
+        temperature: 0.1,
+        maxOutputTokens: 65536,
+        safetySettings: SAFETY_SETTINGS,
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: "DOCUMENT 1: CCC VALUATION REPORT" },
+            { inlineData: { mimeType: cccMime, data: cccBase64 } },
+            { text: "DOCUMENT 2: CARFAX VALUATION REPORT" },
+            { inlineData: { mimeType: carfaxMime, data: carfaxBase64 } },
+            { text: "Compare these two reports. EXTRACT VIN AND VEHICLE DETAILS FIRST. Then find any outliers in Value, Mileage, Condition, or Options." }
+          ]
+        }
+      ]
+    });
+
+    let text = response.text;
+    if (!text) {
+      throw new Error(`AI generated empty response.`);
+    }
+
+    text = cleanJsonText(text);
+    return JSON.parse(text) as ValuationResult;
+
+  } catch (error: any) {
+    console.error("Valuation Analysis Error:", error);
+    throw new Error(error.message || "Failed to analyze valuation documents.");
   }
 };
