@@ -167,8 +167,8 @@ const valuationSchema: Schema = {
     vehicleInfo: {
       type: Type.OBJECT,
       properties: {
-        vin: { type: Type.STRING, description: "The 17-character Vehicle Identification Number. Must NOT be null. Look for 'VIN:' or 'Vehicle ID'." },
-        yearMakeModel: { type: Type.STRING, description: "e.g., 2020 Toyota Camry LE. Must NOT be null." },
+        vin: { type: Type.STRING, description: "The 17-character Vehicle Identification Number. Scan headers of BOTH docs. Return 'N/A' if completely missing." },
+        yearMakeModel: { type: Type.STRING, description: "e.g., 2020 Toyota Camry. Scan headers of BOTH docs." },
         trim: { type: Type.STRING, description: "Trim level if available." }
       },
       required: ["vin", "yearMakeModel"]
@@ -192,7 +192,7 @@ const valuationSchema: Schema = {
         type: Type.OBJECT,
         properties: {
           category: { type: Type.STRING, description: "Category of mismatch (e.g. Mileage, Options, Condition)" },
-          description: { type: Type.STRING },
+          description: { type: Type.STRING, description: "THE SPECIFIC ITEM NAME (e.g., 'Navigation System', 'Panoramic Roof', 'Leather Seats'). Do NOT use generic terms." },
           cccValue: { type: Type.STRING, description: "Value as stated in CCC" },
           carfaxValue: { type: Type.STRING, description: "Value as stated in CarFax" },
           severity: { type: Type.STRING, enum: ['HIGH', 'MEDIUM', 'LOW'] },
@@ -214,14 +214,29 @@ const SAFETY_SETTINGS = [
   { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE }
 ];
 
-// Helper to clean markdown code blocks from response
+// Helper to clean markdown code blocks from response and repair common JSON syntax errors
 const cleanJsonText = (text: string): string => {
-  if (!text) return "";
+  if (!text) return "{}";
   let cleaned = text.trim();
-  // Remove markdown wrapping like ```json ... ```
-  cleaned = cleaned.replace(/^```json\s*/, "").replace(/\s*```$/, "");
-  // Remove generic markdown wrapping ``` ... ```
-  cleaned = cleaned.replace(/^```\s*/, "").replace(/\s*```$/, "");
+  
+  // Remove markdown wrapping
+  cleaned = cleaned.replace(/^```json\s*/, "").replace(/^```\s*/, "").replace(/\s*```$/, "");
+
+  // Find first '{' and last '}' to extract the JSON object
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+  
+  if (firstBrace !== -1 && lastBrace !== -1) {
+    cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+  }
+  
+  // Repair common JSON errors:
+  // 1. Missing comma between objects: } { -> }, {
+  cleaned = cleaned.replace(/}\s*{/g, "},{");
+  
+  // 2. Trailing commas before closing brace/bracket
+  cleaned = cleaned.replace(/,(\s*[}\]])/g, "$1");
+
   return cleaned;
 };
 
@@ -327,8 +342,8 @@ export const analyzeDocuments = async (
     console.error("Gemini Analysis Error:", error);
     
     const errorMessage = error.toString();
-    if (errorMessage.includes("xhr error") || errorMessage.includes("Rpc failed") || errorMessage.includes("500")) {
-      throw new Error("Network error or AI Service Overload (500). Please try again or compress PDFs to under 4MB.");
+    if (errorMessage.includes("xhr error") || errorMessage.includes("Rpc failed") || errorMessage.includes("500") || errorMessage.includes("503")) {
+      throw new Error("Network error or AI Service Overload. Please try again or compress PDFs to under 4MB.");
     }
     
     if (errorMessage.includes("JSON") || errorMessage.includes("Expected")) {
@@ -415,7 +430,7 @@ export const analyzeSubroDocuments = async (
   } catch (error: any) {
     console.error("Subro Analysis Error:", error);
     const errorMessage = error.toString();
-    if (errorMessage.includes("xhr error") || errorMessage.includes("Rpc failed") || errorMessage.includes("500")) {
+    if (errorMessage.includes("xhr error") || errorMessage.includes("Rpc failed") || errorMessage.includes("500") || errorMessage.includes("503")) {
       throw new Error("Network error or AI Service Overload. Please retry.");
     }
     if (errorMessage.includes("JSON") || errorMessage.includes("Expected")) {
@@ -437,41 +452,57 @@ export const analyzeValuationDocuments = async (
     You are an expert Auto Valuation Analyst. 
     Your job is to compare a "CCC Valuation Report" against a "CarFax Valuation/History Report".
 
-    OBJECTIVES:
-    1. METADATA (HIGHEST PRIORITY): 
-       - You MUST extract the VIN (17-char alphanumeric). Look at the top right or left of the headers on EVERY page.
-       - Look for labels: "VIN:", "Vehicle ID:", "Vehicle Identification Number".
-       - Look for the Vehicle Description (Year Make Model) usually at the very top of the first page (e.g. "2018 Ford F-150").
-       - Check BOTH documents. If one is missing it, take it from the other.
-       - You MUST populate the 'vehicleInfo' object. 'vin' and 'yearMakeModel' are REQUIRED.
+    CRITICAL PRIORITY: DATA EXTRACTION & MAPPING
 
-    2. DATA EXTRACTION:
-       - CCC: Extract the "Total Adjusted Vehicle Value" (or similar final value). Extract CCC Mileage.
-       - CarFax: Extract "History Based Value" (Retail or Private Party, whichever is prominent). Extract CarFax Last Reported Mileage.
-    
-    3. OUTLIER ANALYSIS (The most important part):
-       - Compare Options/Features: Does CCC list navigation but CarFax doesn't? Does CarFax show an accident history that CCC ignored?
-       - Compare Condition: Does CCC rate condition as Average but CarFax suggests Excellent/Poor?
-       - Compare Mileage: Is there a significant discrepancy (>1000 miles)?
-    
-    4. REPORTING:
-       - If there are NO discrepancies, return 'matchStatus': 'PERFECT_MATCH' and empty outliers.
-       - If there are discrepancies, list them in the 'outliers' array with severity.
-       - 'outliers' should be SPECIFIC (e.g. "CCC lists Leather Seats, CarFax Build Data lists Cloth").
-    
-    OUTPUT FORMAT:
-    Return strictly structured JSON matching the following schema. Ensure all REQUIRED fields are populated.
-    ${JSON.stringify(valuationSchema, null, 2)}
+    1. VEHICLE IDENTIFICATION (Find in Headers):
+       - CCC Report: Scan the top section (Page 1-4) for "VIN", "Year", "Make", "Model", "Trim".
+       - CarFax Report: Scan the top Blue Banner or "Subject Vehicle" section on Page 1.
+       - ACTION: Extract the VIN (17-char) and the full Vehicle String (e.g., "2022 BMW X5 xDrive40i").
+
+    2. VALUE EXTRACTION (Find Specific Labels):
+       - CCC Value: Locate the "VALUATION SUMMARY" section (usually Page 1). Extract the "Adjusted Vehicle Value".
+         * DO NOT use "Base Vehicle Value".
+         * DO NOT use "Total" (which includes tax).
+         * Target: "Adjusted Vehicle Value".
+       - CarFax Value: Locate the large blue value on Page 1 labeled "Your Vehicle's Value" OR Page 3 "History Based Value".
+       - ACTION: Populate 'cccTotalValue' and 'carfaxTotalValue'.
+
+    3. MILEAGE EXTRACTION:
+       - CCC: Look under "VEHICLE INFORMATION" -> "Odometer" (e.g., 42,894).
+       - CarFax: Look on Page 1 under "Odometer" OR "Your Vehicle Details" -> "Good" -> "42,894 miles".
+       - ACTION: Populate 'cccMileage' and 'carfaxMileage'.
+
+    4. OUTLIER ANALYSIS (The Core Task):
+       - COMPARE OPTIONS (High Severity):
+         * Scan CCC's "VEHICLE EQUIPMENT" and "COMPARABLE VEHICLES" columns for the Loss Vehicle (check marks vs red Xs).
+         * Scan CarFax's "Your Vehicle Details"looking for Green Checkmarks next to features.
+         * RULE: If CarFax says a feature is PRESENT (Green Check) but CCC says it is ABSENT (Red X or missing from Equipment list), this is a HIGH SEVERITY OUTLIER.
+         * IMPORTANT: When populating the 'description' field for an outlier, use the SPECIFIC FEATURE NAME (e.g., "Panoramic Moonroof", "Navigation System"). Do NOT use generic terms like "Options".
+       
+       - COMPARE CONDITION:
+         * CCC uses terms like "Average", "Moderate Wear", "Dealer", "Private".
+         * CarFax uses terms like "Good", "Great", "Excellent".
+         * NOTE: "Moderate Wear" in CCC often equals "Good" in CarFax. Do NOT flag this as an outlier unless the difference is extreme (e.g., "Poor" vs "Excellent").
+         
+       - COMPARE MILEAGE:
+         * Flag if difference > 500 miles.
+
+    5. OUTPUT RULES:
+       - Return strictly structured JSON.
+       - Return 'matchStatus': 'PERFECT_MATCH', 'MINOR_DISCREPANCIES', or 'SIGNIFICANT_OUTLIERS'.
+       - Return ALL found outliers in the 'outliers' array.
+       - Ensure you place a comma between every item in the 'outliers' array.
   `;
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
+      model: 'gemini-2.5-flash',
       config: {
         systemInstruction: systemInstruction,
         responseMimeType: "application/json",
-        temperature: 0.1,
-        maxOutputTokens: 65536,
+        // Removed strict responseSchema to prevent syntax errors on arrays
+        temperature: 0.2,
+        maxOutputTokens: 16384,
         safetySettings: SAFETY_SETTINGS,
       },
       contents: [
@@ -482,7 +513,7 @@ export const analyzeValuationDocuments = async (
             { inlineData: { mimeType: cccMime, data: cccBase64 } },
             { text: "DOCUMENT 2: CARFAX VALUATION REPORT" },
             { inlineData: { mimeType: carfaxMime, data: carfaxBase64 } },
-            { text: "Compare these two reports. EXTRACT VIN AND VEHICLE DETAILS FIRST. Then find any outliers in Value, Mileage, Condition, or Options." }
+            { text: "Compare these two reports. EXTRACT Adjusted Value vs Retail Value. CHECK Mileage. CHECK Options (CarFax Checkmarks vs CCC Equipment List). Return JSON matching the schema: " + JSON.stringify(valuationSchema) }
           ]
         }
       ]
@@ -498,6 +529,10 @@ export const analyzeValuationDocuments = async (
 
   } catch (error: any) {
     console.error("Valuation Analysis Error:", error);
+    const errorMessage = error.toString();
+    if (errorMessage.includes("xhr error") || errorMessage.includes("Rpc failed") || errorMessage.includes("500") || errorMessage.includes("503")) {
+       throw new Error("AI Service Overload (503). Please try again in a few moments.");
+    }
     throw new Error(error.message || "Failed to analyze valuation documents.");
   }
 };

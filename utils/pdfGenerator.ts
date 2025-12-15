@@ -1,7 +1,7 @@
 
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { ComparisonResult, LineItem } from '../types';
+import { ComparisonResult } from '../types';
 
 export const generateDiffPDF = (data: ComparisonResult) => {
   const doc = new jsPDF();
@@ -321,59 +321,7 @@ export const generateDiffPDF = (data: ComparisonResult) => {
   const splitWarranty = doc.splitTextToSize(warrantyText, pageWidth - (margin * 2));
   doc.text(splitWarranty, margin, 30);
 
-  // Items Table
-  // Filter: Must include Part Number AND (Operation == "Repl" OR "Rpr")
-  const groupedItems: Record<string, LineItem[]> = {};
-  
-  data.addedItems.forEach(item => {
-    // 1. Check for valid part number
-    const hasPartNumber = item.partNumber && item.partNumber.trim().length > 1 && item.partNumber.toUpperCase() !== "N/A";
-    
-    // 2. Check for "Rpr and Repl" operations
-    // Note: We interpret "Rpr and Repl" as "Repl" OR "Rpr" operation type.
-    const op = (item.operation || '').toUpperCase();
-    const isReplOrRpr = op.includes('REPL') || op.includes('RPR') || op === 'REP';
-
-    if (hasPartNumber && isReplOrRpr) {
-      const cat = item.category || 'Other';
-      if (!groupedItems[cat]) groupedItems[cat] = [];
-      groupedItems[cat].push(item);
-    }
-  });
-  
-  const categories = Object.keys(groupedItems).sort();
-  const warrantyBody: any[] = [];
-
-  categories.forEach(cat => {
-    // Add Category Header
-    warrantyBody.push([
-      { content: cat.toUpperCase(), colSpan: 2, styles: { fillColor: [240, 240, 240], fontStyle: 'bold', textColor: [60, 60, 60] } }
-    ]);
-    
-    // Add Items (Part # and Description only, no Quantity)
-    groupedItems[cat].forEach(item => {
-       warrantyBody.push([
-         item.partNumber || '-', // Column 1: Part #
-         item.description        // Column 2: Description
-       ]);
-    });
-  });
-
-  if (warrantyBody.length === 0) {
-    warrantyBody.push([{ content: "No replacement parts matching warranty criteria detected.", colSpan: 2, styles: { halign: 'center', fontStyle: 'italic', textColor: [150, 150, 150] } }]);
-  }
-
-  autoTable(doc, {
-    startY: 30 + (splitWarranty.length * 5) + 5,
-    head: [['Part #', 'Item / Description']], // Removed Quantity Column
-    body: warrantyBody,
-    headStyles: { fillColor: [44, 62, 80] },
-    theme: 'grid',
-    columnStyles: {
-      0: { cellWidth: 50 }, // Part #
-      1: { cellWidth: 'auto' } // Desc
-    },
-  });
+  // Items Table Removed
 
   doc.save('supplement-analysis-report.pdf');
 };

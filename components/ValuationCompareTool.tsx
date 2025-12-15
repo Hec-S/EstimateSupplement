@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { FileUploader } from './FileUploader';
 import { analyzeValuationDocuments } from '../services/geminiService';
@@ -271,8 +270,13 @@ export const ValuationCompareTool: React.FC<ValuationCompareToolProps> = ({ onBa
                     {outliers.map((item, idx) => (
                       <tr key={idx} className="hover:bg-slate-50">
                         <td className="px-6 py-4">
-                          <div className="font-bold text-slate-800">{item.category}</div>
-                          <div className="text-slate-500 text-xs mt-1">{item.note}</div>
+                          <div className="font-bold text-slate-800 text-base">{item.description}</div>
+                          <div className="flex items-center gap-2 mt-1">
+                             <span className="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wide border border-slate-200">
+                               {item.category}
+                             </span>
+                             {item.note && <span className="text-slate-500 text-xs">{item.note}</span>}
+                          </div>
                         </td>
                         <td className="px-6 py-4 text-slate-700 font-medium bg-slate-50/50">{item.cccValue}</td>
                         <td className="px-6 py-4 text-slate-700 font-medium bg-indigo-50/20">{item.carfaxValue}</td>
